@@ -1,87 +1,111 @@
-# Experiment 5: TLS Handshake Analysis using Wireshark
+# Experiment 5: ARP Spoofing and Session Hijacking
 
 ## Aim
-This experiment helps us understand how a secure HTTPS connection starts. We use Wireshark to capture network traffic and study the TLS handshake between a client and a server.
 
-## What is TLS?
-TLS stands for Transport Layer Security. It is used to protect data sent over the internet. It keeps information private and checks that the server is genuine.
+To study ARP spoofing in an isolated virtual lab and observe HTTP traffic exchanged with DVWA. The experiment demonstrates why unencrypted web traffic can put session information at risk.
 
-When a browser opens a secure website, it first performs a TLS handshake. During this process, the browser and server agree on:
-- which TLS version to use
-- which encryption method to use
-- how to create a safe connection
+## Lab Setup
 
-## Tools Used
-- Wireshark
-- A browser using HTTPS
-- Captured packet files
+| Machine | Role | IP address |
+| --- | --- | --- |
+| Kali Linux (`eth0`) | Testing machine | `192.168.188.128` |
+| Metasploitable 2 with DVWA | Web server | `192.168.188.134` |
+| Lab gateway | Gateway | `192.168.188.2` |
 
-## Step 1: Capture the HTTPS traffic
-We opened Wireshark and started capturing traffic while visiting a secure website. Then we saved the data as a packet capture file.
+**Tools:** `arpspoof` (dsniff), Wireshark, and a web browser.
 
-The capture files for this experiment are:
-- [Original TLS handshake capture](Outputs/Exp5_tls_handshake.pcapng)
-- [Decrypted TLS capture](Outputs/Exp5_tls_decrypted.pcapng)
+> Perform this experiment only on your own isolated lab or on systems for which you have permission.
 
-## Step 2: Check the ClientHello message
-The ClientHello message is the first message sent by the client to the server. It tells the server which TLS versions and security options the client supports.
+## Theory
 
-![ClientHello message](Outputs/clienthello.png)
+### ARP spoofing
 
-### Observation
-From the ClientHello packet, we can see:
-- the client supports TLS 1.2 and TLS 1.3
-- it offers different cipher suites
-- it shares key information needed to begin secure communication
+Devices on a local network use ARP to associate an IP address with a MAC address. ARP spoofing sends false ARP replies so that a device may temporarily associate another machine's IP address with the tester's MAC address. In a two-way setup, the tester attempts to place itself between the victim and gateway. Enabling IP forwarding allows packets passing through the tester to continue to their destination.
 
-## Step 3: Check the ServerHello message
-The server replies with a ServerHello message. This tells the client which TLS version and encryption method were chosen.
+The two commands used in this lab target each side of the connection:
 
-![ServerHello message](Outputs/serverhello.png)
+```bash
+# Send false replies to the victim about the gateway
+sudo arpspoof -i eth0 -t 192.168.188.134 192.168.188.2
 
-### Observation
-The ServerHello shows:
-- the selected TLS version
-- the chosen cipher suite
-- the server's key exchange details
+# Send false replies to the gateway about the victim
+sudo arpspoof -i eth0 -t 192.168.188.2 192.168.188.134
+```
 
-## Step 4: Decrypt the TLS traffic
-Wireshark can decrypt the captured session if the TLS key log file is available. This helps us see the later handshake messages that are normally hidden.
+### HTTP traffic and session cookies
 
-![Decrypted TLS handshake](Outputs/decrypted.png)
+HTTP does not encrypt its contents. If a web application sends a session cookie over plain HTTP, someone able to capture that traffic may be able to read it. A session cookie can act like a temporary password, so it must be kept private. HTTPS encrypts traffic in transit and helps protect cookies from network observers.
 
-### Observation
-After decryption, we can clearly see messages like:
-- EncryptedExtensions
-- Certificate
-- CertificateVerify
-- Finished
+**How the concepts connect:** ARP spoofing may redirect local traffic; packet capture can then be used to inspect traffic that is visible to the tester; and HTTP traffic may expose sensitive data if the application sends it without encryption.
 
-These messages show that the server and client are confirming the connection and preparing to exchange encrypted data.
+## Procedure
 
-## Step 5: Inspect the server certificate
-The certificate is important because it proves the identity of the server. It contains the server name, validity dates, public key, and issuer information.
+The screenshots below follow the lab workflow. Each one is placed next to the concept it demonstrates.
 
-![TLS certificate details](Outputs/certificate.png)
+### Step 1: Check the Kali network
 
-### Observation
-From the certificate details, we can identify:
-- the certificate holder
-- the issuer
-- the validity period
-- the public key information
-- the security algorithm used
+On Kali, use `ip a` to confirm that `eth0` is up and has the expected lab address.
+
+The screenshot shows `eth0` configured as `192.168.188.128/24`, placing Kali and Metasploitable on the same subnet.
+
+![Step 1: Kali eth0 address](Screenshots/Step1.png)
+
+### Step 2: Check the Metasploitable network
+
+On Metasploitable 2, use `ip a` to identify its address and ping the gateway to check basic connectivity.
+
+```bash
+ip a
+ping -c 2 192.168.188.2
+```
+
+The screenshot shows the Metasploitable address (`192.168.188.134`), successful replies from the gateway, and its interface configuration.
+
+![Step 2: Metasploitable IP address and gateway connectivity](Screenshots/Step2.png)
+
+### Step 3: Send false gateway information to the victim
+
+Enable packet forwarding on Kali, then run this command in a Kali terminal. It sends ARP replies to Metasploitable (`192.168.188.134`) claiming that the gateway (`192.168.188.2`) is at Kali's MAC address.
+
+```bash
+sudo sysctl -w net.ipv4.ip_forward=1
+sudo arpspoof -i eth0 -t 192.168.188.134 192.168.188.2
+```
+
+The repeated ARP replies in the screenshot are evidence that `arpspoof` is running in this direction. They do not, by themselves, confirm that both directions of the traffic are being intercepted.
+
+![Step 3: ARP replies sent to the victim](Screenshots/Step3.png)
+
+### Step 4: Send false victim information to the gateway
+
+In a second Kali terminal, run the reverse command. This sends ARP replies to the gateway (`192.168.188.2`) claiming that Metasploitable (`192.168.188.134`) is at Kali's MAC address. Running both commands is intended to place Kali between the two machines.
+
+```bash
+sudo arpspoof -i eth0 -t 192.168.188.2 192.168.188.134
+```
+
+![Step 4: ARP replies sent to the gateway](Screenshots/Step4.png)
+
+### Step 5: Capture traffic and log in to DVWA
+
+Start capturing on Kali's `eth0` in Wireshark. In the lab browser, open `http://192.168.188.134/dvwa/` and sign in with the lab account (`admin` / `password`).
+
+The browser screenshot shows the DVWA page and the authenticated `admin` session. This confirms the lab login; it is not evidence that the session was hijacked.
+
+![Step 5: Authenticated DVWA page](Screenshots/Step5.png)
+
+### Step 6: Inspect the HTTP packets
+
+In Wireshark, apply the display filter `http` to find the web traffic.
+
+The screenshot shows HTTP packets exchanged between `192.168.188.128` (Kali) and `192.168.188.134` (Metasploitable). HTTP does not encrypt the packet contents. However, the screenshot does not show a session cookie or prove that a cookie was extracted or reused.
+
+![Step 6: HTTP packets between Kali and Metasploitable](Screenshots/Step6.png)
 
 ## Result
-This experiment showed how a secure HTTPS connection is created step by step. We successfully observed:
-- ClientHello from the browser
-- ServerHello from the website
-- TLS certificate exchange
-- handshake decryption
-- secure session setup
 
-## Simple conclusion
-TLS is the security method used in HTTPS. Wireshark helps us see the communication details of this process. By observing ClientHello, ServerHello, and the certificate, we can better understand how secure websites protect user data.
+The screenshots document successful lab connectivity, the Kali interface configuration, ARP spoofing commands, an authenticated DVWA page, and HTTP packets between Kali and Metasploitable. The evidence illustrates the risks of plain HTTP, but does not visibly demonstrate session-cookie extraction or reuse.
 
-## Final note
-This experiment helps us understand the real working of internet security. It shows that even though the traffic is encrypted, Wireshark can still analyze it when the correct security keys are available.
+## Conclusion
+
+ARP spoofing can manipulate local network address information, while unencrypted HTTP can expose data sent between a browser and a web application. Use HTTPS and secure cookie settings in real applications. Keep security testing isolated, authorized, and careful with any captured session data.
